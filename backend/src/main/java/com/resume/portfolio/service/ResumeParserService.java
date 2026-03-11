@@ -43,7 +43,17 @@ public class ResumeParserService {
         // Extract additional sections
         data.setCertifications(extractSimpleList(content,
                 new String[] { "certifications", "certificates", "credentials", "licenses" }));
-        data.setLanguages(extractSimpleList(content, new String[] { "languages", "spoken languages" }));
+
+        List<String> rawLanguages = extractSimpleList(content, new String[] { "languages", "spoken languages" });
+        // Clean up overlaps: if a skill was misclassified as a language, remove it from
+        // languages
+        if (data.getSkills() != null && !data.getSkills().isEmpty() && rawLanguages != null) {
+            rawLanguages.removeIf(lang -> data.getSkills().stream()
+                    .anyMatch(skill -> skill.equalsIgnoreCase(lang) || skill.toLowerCase().contains(lang.toLowerCase())
+                            || lang.toLowerCase().contains(skill.toLowerCase())));
+        }
+        data.setLanguages(rawLanguages);
+
         data.setAwards(
                 extractSimpleList(content, new String[] { "awards", "honors", "achievements", "accomplishments" }));
 
@@ -212,17 +222,45 @@ public class ResumeParserService {
             if (isSectionHeader(lowerLine) && (lowerLine.contains("skills") || lowerLine.contains("technologies")
                     || lowerLine.contains("competencies") || lowerLine.contains("stack"))) {
                 inSkills = true;
+
+                // Allow inline skills on the header line (e.g., "Skills: Java, C++")
+                if (trimmedLine.contains(":") && trimmedLine.indexOf(":") < 40) {
+                    String inlineContent = trimmedLine.substring(trimmedLine.indexOf(":") + 1).trim();
+                    if (!inlineContent.isEmpty()) {
+                        String[] tokens = inlineContent.split("[,|•·;]");
+                        for (String token : tokens) {
+                            String skill = token.trim();
+                            if (!skill.isEmpty() && skill.length() > 1 && skill.length() < 30) {
+                                skills.add(skill);
+                            }
+                        }
+                    }
+                }
                 continue;
             }
 
             if (inSkills && isSectionHeader(lowerLine) && !lowerLine.contains("skills")
-                    && !lowerLine.contains("technologies")) {
-                break;
+                    && !lowerLine.contains("technologies") && !lowerLine.contains("competencies")
+                    && !lowerLine.contains("stack")) {
+
+                // Don't break if it's a known skills sub-category
+                if (lowerLine.matches(
+                        "^(languages?|frameworks?|tools?|databases?|libraries?|web technologies?|concepts?|platforms?|programming languages?|core competencies?)\\s*(:.*)?$")) {
+                    // Keep accumulating skills
+                } else {
+                    break;
+                }
             }
 
             if (inSkills) {
+                // Remove category prefixes (e.g., "Programming Languages: Python" -> "Python")
+                String lineToProcess = trimmedLine;
+                if (lineToProcess.contains(":") && lineToProcess.indexOf(":") < 40) {
+                    lineToProcess = lineToProcess.substring(lineToProcess.indexOf(":") + 1).trim();
+                }
+
                 // Split by common delimiters: comma, pipe, bullet points
-                String[] tokens = trimmedLine.split("[,|•·;]");
+                String[] tokens = lineToProcess.split("[,|•·;]");
                 for (String token : tokens) {
                     String skill = token.trim();
                     // Filter out noise
@@ -587,6 +625,14 @@ public class ResumeParserService {
         // Section headers are usually short and contain specific keywords
         if (l.length() > 60) // Relaxed from 30
             return false;
+
+        // Prevent sub-headers within skills from false-triggering section breaks
+        // (resulting in overlap with languages)
+        if (l.contains("programming language") || l.contains("programming languages")
+                || l.contains("markup language")) {
+            return false;
+        }
+
         return l.equals("experience") || l.equals("work experience") || l.equals("education") ||
                 l.equals("skills") || l.equals("technical skills") || l.equals("projects") ||
                 l.equals("summary") || l.equals("objective") || l.equals("profile") ||
